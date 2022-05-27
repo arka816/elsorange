@@ -96,7 +96,8 @@ class Elsevier(OWBaseWidget):
         gui.separator(self.controlArea)
 
         self.controlBox = gui.widgetBox(self.controlArea, orientation=1)
-        gui.button(self.controlBox, self, 'SEARCH', callback=self._start_download)
+        gui.button(self.controlBox, self, 'SEARCH', callback=self._start_download_thread)
+        gui.button(self.controlBox, self, 'STOP')
 
         self.info.set_input_summary(self.info.NoInput)
 
@@ -256,6 +257,8 @@ class Elsevier(OWBaseWidget):
             - signals the corpus to the output stream
         """
 
+        print("spawned process:", os.getpid())
+
         self.progress = Orange.widgets.gui.ProgressBar(self, 1)
         self.progressBarInit()
         df = self._extract_data()
@@ -264,5 +267,7 @@ class Elsevier(OWBaseWidget):
         self.progressBarFinished()
         self.Outputs.articles.send(corpus)
 
-    def _start_download(self):
-        self._send_article()
+    def _start_download_thread(self):
+        print("parent process:", os.getpid())
+        self._download_process = Process(target=self._send_article, args=(self, ))
+        self._download_process.start()
