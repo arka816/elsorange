@@ -11,6 +11,12 @@ import numpy as np
 
 import datetime
 
+from multiprocessing import Process
+
+import os
+
+METADATA_DOWNLOAD_PROGRESS = 30
+
 
 class Elsevier(OWBaseWidget):
     name = "Elsevier"
@@ -90,13 +96,17 @@ class Elsevier(OWBaseWidget):
         gui.separator(self.controlArea)
 
         self.controlBox = gui.widgetBox(self.controlArea, orientation=1)
-        gui.button(self.controlBox, self, 'START', callback=self._send_article)
-        gui.button(self.controlBox, self, 'STOP')
+        gui.button(self.controlBox, self, 'SEARCH', callback=self._start_download)
 
         self.info.set_input_summary(self.info.NoInput)
 
     def _fetch_results(self):
-        # generate scopus query
+        """
+            - captures input data
+            - generates and executes scopus query
+        """
+
+        # capture input data
         fieldType = self.fieldTypeItems[self.fieldType]
         searchText = self.searchText
         recordCount = self.recordCount
@@ -115,15 +125,17 @@ class Elsevier(OWBaseWidget):
         # print('start year:', startYear)
         # print('end year:', endYear)
 
+        # generate scopus query
         query = f'{self.fieldTypeCodes[fieldType]}({searchText}) AND PUBYEAR > {startYear} AND PUBYEAR < {endYear}'
 
         # execute scopus query
         self.client = ElsClient(self.apiKey)
-        doc_srch = ElsSearch(query,'scopus')
-        doc_srch.execute(self.client, get_all = True)
+        self.doc_srch = ElsSearch(query,'scopus')
+        self.doc_srch.execute(self.client, get_all = True)
 
-        results = doc_srch.results_df
+        results = self.doc_srch.results_df
 
+        # limit results shown
         if len(results) > recordCount:
             results = results[:recordCount]
 
@@ -133,11 +145,14 @@ class Elsevier(OWBaseWidget):
             self.error('error fetching results')
             return pd.DataFrame()
 
-        self.progressBarSet(30)
+        # update progressbar
+        self.progressBarSet(METADATA_DOWNLOAD_PROGRESS)
+
         return results
 
     def _extract_data(self):
         """
+            downloads abstract for each article and
             returns dataframe with columns
             1. title
             2. author(/s)
@@ -161,7 +176,7 @@ class Elsevier(OWBaseWidget):
         final_df['prism:coverDate'] = final_df['prism:coverDate'].apply(lambda d: d.strftime('%d-%m-%Y'))
 
         abstractDownloadCount = 0
-        progress = 30
+        progress = METADATA_DOWNLOAD_PROGRESS
 
         def get_abstract(link):
             nonlocal abstractDownloadCount, progress, self
@@ -173,7 +188,7 @@ class Elsevier(OWBaseWidget):
             abstract = response['coredata']['dc:description']
 
             abstractDownloadCount += 1
-            progress  = int(progress + 70 * abstractDownloadCount / totalCount)
+            progress  = int(METADATA_DOWNLOAD_PROGRESS + (100 - METADATA_DOWNLOAD_PROGRESS) * abstractDownloadCount / totalCount)
             self.progressBarSet(progress)
             return abstract
 
@@ -184,6 +199,14 @@ class Elsevier(OWBaseWidget):
     def _dataframe_to_corpus_entries(self, df):
         """
             create corpus entries from dataframe records
+
+            Args:
+                - df : dataframe containing columns :- title, author, date of publication, DOI, abstract
+
+            Returns:
+                - metadata: an n*m array where n is the number of articles and m is the number of 
+                            attributes (title, author...) for each article
+                - class_values: list where elements are class values for each article (empty in our case)
         """
         class_values = []
         metadata = np.empty((len(df), len(df.columns)), dtype=object)
@@ -198,28 +221,48 @@ class Elsevier(OWBaseWidget):
 
         return metadata, class_values
 
-    def _corpus_from_records(self, df):
-        meta_values, class_values = self._dataframe_to_corpus_entries(df)
+    def _corpus_from_records(self, meta_values, class_values):
+        """
+            converts records to a corpus
+
+            Args:
+                - metadata: an n*m array where n is the number of articles and m is the number of 
+                            attributes (title, author...) for each article
+                - class_values: list where elements are class values for each article (empty in our case)
+
+            Returns:
+                - corpus: the output corpus suitable for a corpus viewer
+        """
 
         meta_vars = []
 
         for field_name, _ in self.metadataCodes:
-            if field_name == 'dat':
-                time_var = Orange.data.TimeVariable(field_name)
-                meta_vars.append(time_var)
-            else:
-                meta_vars.append(Orange.data.StringVariable.make(field_name))
-                if field_name == 'title':
-                    meta_vars[-1].attributes['title'] = True
+            meta_vars.append(Orange.data.StringVariable.make(field_name))
+            if field_name == 'title':
+                meta_vars[-1].attributes['title'] = True
+                
 
         domain = Orange.data.Domain([], metas = meta_vars)
 
         return Corpus(domain=domain, metas=meta_values)
 
     def _send_article(self):
+        """
+            the handler for the search button
+
+            - extracts data from scopus query result
+            - converts extracted data to metadata and class values
+            - generates corpus from said metadata and class values
+            - signals the corpus to the output stream
+        """
+
         self.progress = Orange.widgets.gui.ProgressBar(self, 1)
         self.progressBarInit()
         df = self._extract_data()
-        corpus = self._corpus_from_records(df)
+        meta_values, class_values = self._dataframe_to_corpus_entries(df)
+        corpus = self._corpus_from_records(meta_values, class_values)
         self.progressBarFinished()
         self.Outputs.articles.send(corpus)
+
+    def _start_download(self):
+        self._send_article()

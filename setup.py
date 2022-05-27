@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(
-        name="Demo",
+        name="Text Mining",
         packages=["elsevier"],
         package_data={"elsevier": ["icons/*.svg"]},
         classifiers=["Example :: Invalid"],
