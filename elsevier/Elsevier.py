@@ -129,7 +129,12 @@ class Elsevier(OWBaseWidget):
         # execute scopus query
         self.client = ElsClient(self.apiKey)
         self.doc_srch = ElsSearch(query,'scopus')
-        self.doc_srch.execute(self.client, get_all = True)
+        
+        try:
+            self.doc_srch.execute(self.client, get_all = True)
+        except:
+            self.error('could not execute scopus query. check internet.')
+            self.progressBarFinished()
 
         results = self.doc_srch.results_df
 
@@ -141,6 +146,7 @@ class Elsevier(OWBaseWidget):
         if 'error' in results.columns:
             self.info.set_output_summary(f"no articles found")
             self.error('error fetching results')
+            self.progressBarFinished()
             return pd.DataFrame()
 
         # update progressbar
@@ -165,9 +171,10 @@ class Elsevier(OWBaseWidget):
         if totalCount == 0:
             self.info.set_output_summary(f"no articles found")
             self.warning('no records found')
+            self.progressBarFinished()
             return pd.DataFrame()
-
-        self.info.set_output_summary(f"{totalCount} articles")
+        else:
+            self.info.set_output_summary(f"{totalCount} articles")
 
         final_df = results[['dc:title', 'dc:creator', 'prism:coverDate', 'prism:doi']]
 
@@ -178,12 +185,15 @@ class Elsevier(OWBaseWidget):
 
         def get_abstract(link):
             nonlocal abstractDownloadCount, progress, self
+            scopus_link = link['self']
+
             try:
-                scopus_link = link['self']
-
                 rawdata = self.client.exec_request(scopus_link)
+            except:
+                self.error('could not fetch abstract. check internet.')
+            
+            try:
                 response = rawdata['abstracts-retrieval-response']
-
                 abstract = response['coredata']['dc:description']
             except:
                 abstract = 'n/a'
