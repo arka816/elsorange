@@ -1,11 +1,19 @@
 from setuptools import setup
+import os
+
+def read(fname):
+    return open(os.path.join(os.path.dirname(__file__), fname)).read()
 
 setup(
-        name="Text Mining",
+        name="Dev",
+        version="0.0.1",
+        author="Arka",
+        author_email="arkaprava.mail@gmail.com",
+        license="MIT",
+        long_description=read('README.md'),
         packages=["elsevier"],
         package_data={"elsevier": ["icons/*.svg"]},
-        classifiers=["Example :: Invalid"],
-        # Declare orangedemo package to contain widgets for the "Demo" category
-        entry_points={"orange.widgets": "Demo = elsevier"},
+        entry_points={"orange.widgets": "Dev = elsevier"},
+        zip_safe=False,
     )
     

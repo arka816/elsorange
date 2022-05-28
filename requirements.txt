@@ -1,5 +1,5 @@
 elsapy==0.5.0
-numpy==1.19.5
+numpy==1.22.3
 Orange==2.7.8
 Orange3_Text==1.7.0
 orange_widget_base==4.16.1

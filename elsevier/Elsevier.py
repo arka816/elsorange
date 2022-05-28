@@ -11,10 +11,6 @@ import numpy as np
 
 import datetime
 
-from multiprocessing import Process
-
-import os
-
 METADATA_DOWNLOAD_PROGRESS = 30
 
 
@@ -32,7 +28,7 @@ class Elsevier(OWBaseWidget):
 
     apiKey = settings.Setting("")
     searchText = settings.Setting("")
-    fieldType = settings.Setting("")
+    fieldType = settings.Setting(0)
     recordCount = settings.Setting(100)
     startDate = settings.Setting('1991-08-15')
     endDate = settings.Setting('2000-02-24')
