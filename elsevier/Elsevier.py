@@ -104,6 +104,11 @@ class Elsevier(OWBaseWidget):
             - generates and executes scopus query
         """
 
+        # check api key
+        if self.apiKey == "":
+            self.error('api key empty')
+            self.progressBarFinished()
+
         # capture input data
         fieldType = self.fieldTypeItems[self.fieldType]
         searchText = self.searchText
@@ -127,7 +132,12 @@ class Elsevier(OWBaseWidget):
         query = f'{self.fieldTypeCodes[fieldType]}({searchText}) AND PUBYEAR > {startYear} AND PUBYEAR < {endYear}'
 
         # execute scopus query
-        self.client = ElsClient(self.apiKey)
+        try:
+            self.client = ElsClient(self.apiKey)
+        except:
+            self.error('api key invalid')
+            self.progressBarFinished()
+
         self.doc_srch = ElsSearch(query,'scopus')
         
         try:
