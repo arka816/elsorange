@@ -7,6 +7,8 @@ from elsapy.elsclient import ElsClient
 from elsapy.elssearch import ElsSearch
 
 import pandas as pd
+pd.options.mode.chained_assignment = None 
+
 import numpy as np
 
 import datetime
