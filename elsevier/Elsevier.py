@@ -176,12 +176,15 @@ class Elsevier(OWBaseWidget):
 
         def get_abstract(link):
             nonlocal abstractDownloadCount, progress, self
-            scopus_link = link['self']
+            try:
+                scopus_link = link['self']
 
-            rawdata = self.client.exec_request(scopus_link)
-            response = rawdata['abstracts-retrieval-response']
+                rawdata = self.client.exec_request(scopus_link)
+                response = rawdata['abstracts-retrieval-response']
 
-            abstract = response['coredata']['dc:description']
+                abstract = response['coredata']['dc:description']
+            except:
+                abstract = 'n/a'
 
             abstractDownloadCount += 1
             progress  = int(METADATA_DOWNLOAD_PROGRESS + (100 - METADATA_DOWNLOAD_PROGRESS) * abstractDownloadCount / totalCount)
