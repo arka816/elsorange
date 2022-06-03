@@ -122,11 +122,6 @@ class Elsevier(OWBaseWidget):
 
         startYear = startDate[:4]
         endYear = endDate[:4]
-        
-        # print('field type:', fieldType)
-        # print('search text:', searchText)
-        # print('start year:', startYear)
-        # print('end year:', endYear)
 
         # generate scopus query
         query = f'{self.fieldTypeCodes[fieldType]}({searchText}) AND PUBYEAR > {startYear} AND PUBYEAR < {endYear}'
