@@ -12,6 +12,6 @@ conda install pandas
 conda install setuptools
 
 @echo on
-cd \github\elsevier
+cd %~d0%
 pip install -e .
 pause
