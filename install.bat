@@ -14,4 +14,5 @@ conda install setuptools
 @echo on
 cd %~d0%
 pip install -e .
+deactivate
 pause
