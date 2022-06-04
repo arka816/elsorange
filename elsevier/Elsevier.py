@@ -8,13 +8,279 @@ from elsapy.elssearch import ElsSearch
 
 import pandas as pd
 pd.options.mode.chained_assignment = None 
-
 import numpy as np
-
 import datetime
 
 METADATA_DOWNLOAD_PROGRESS = 30
 
+from tldextract import extract
+import requests
+import time, PyPDF2
+import pathlib, requests
+from selenium import webdriver
+from webdriver_manager.chrome import ChromeDriverManager
+import os
+import tempfile
+import shutil
+
+"""
+tandfonline does not issue api keys; rather uses cloudflare services as a means of protection from bots.
+requests library would not work. neither would http2 or postman for example for the same reason.
+
+two ways to watch for automated chrome file downloads since webdriver does not fire any native events to selenium.
+    1. open chrome://downloads and watch progressbar for completion of download
+    2. use filesystem observers like watchdog
+"""
+from watchdog.observers import Observer
+
+class Article:
+    """base class for article downloaders""" 
+    __chunk_size = 4096                                                 # chunk size of file to write in every iteration
+    __last_request_timestamp = time.time()                              # timestamp of last request made to elsevier api
+    __min_req_interval = 1                                              # minimum interval between requests : 1 second
+
+    def __init__(self):
+        pass
+
+    def _write_to_temp_file(self, res):
+        f = tempfile.TemporaryFile()
+        for chunk in res.iter_content(self.__chunk_size):
+            f.write(chunk)
+        del res
+        # convert pdf to text
+        text = self._pdf_to_text(f)
+        return text
+
+    def _pdf_to_text(self, f):
+        pdfReader = PyPDF2.PdfFileReader(f)
+        text = ''
+
+        for i in range(pdfReader.numPages):
+            # extract text from page
+            text += pdfReader.getPage(i).extractText()
+        f.close()
+        return text
+
+class SpringerClient(Article):
+    """a class that implements a Python interface to elsevier article retrieval api"""
+    __url_base = "http://api.springer.com/metadata/json"                    # base url
+    __content_url_base = "https://link.springer.com/content/pdf/"           # base url for pdf
+    
+    def __init__(self, api_key, local_dir=None):
+        super().__init__()
+        self.api_key = api_key
+        if not local_dir:
+            self.local_dir = pathlib.Path.cwd() / 'data'
+        else:
+            self.local_dir = pathlib.Path(local_dir)
+        if not self.local_dir.exists():
+            self.local_dir.mkdir()
+
+    # properties
+    @property
+    def api_key(self):
+        """Get the apiKey for the client instance"""
+        return self._api_key
+    @api_key.setter
+    def api_key(self, api_key):
+        """Set the apiKey for the client instance"""
+        self._api_key = api_key
+
+    def exec_request(self, doi):
+        # throttle if needed
+        interval = time.time() - self._Article__last_request_timestamp
+        if interval < self._Article__min_req_interval:
+            time.sleep(self._Article__min_req_interval - interval)
+
+        # contruct request params
+        params = {
+            'q': f"doi:{doi}",
+            'api_key': self.api_key
+        }
+
+        # send request
+        res = requests.get(
+            self.__url_base,
+            params=params
+        )
+        
+        # TODO: add support for downloading files in future
+
+        # process response
+        if res.status_code == 200:
+            jsonResponse = res.json()
+            totalCount = len(jsonResponse['records'])
+
+            if totalCount > 0:
+                # result exists; download pdf
+                contentUrl = f"{self.__content_url_base}{doi}.pdf"
+                contentRes = requests.get(contentUrl)
+                if contentRes.status_code == 200:
+                    return self._write_to_temp_file(contentRes)
+        return None
+
+class SDClient(Article):
+    """a class that implements a Python interface to elsevier article retrieval api"""
+    __url_base = "https://api.elsevier.com/content/article/doi/"            # base url
+    __elsapy_version  = '0.5.0'                                             # version of elsapy
+    __user_agent = "elsapy-v%s" % __elsapy_version                       
+
+    def __init__(self, api_key, inst_token=None, local_dir=None):
+        super().__init__()
+        self.api_key = api_key
+        self.inst_token = inst_token
+        if not local_dir:
+            self.local_dir = pathlib.Path.cwd() / 'data'
+        else:
+            self.local_dir = pathlib.Path(local_dir)
+        if not self.local_dir.exists():
+            self.local_dir.mkdir()
+
+    # properties
+    @property
+    def api_key(self):
+        """Get the apiKey for the client instance"""
+        return self._api_key
+    @api_key.setter
+    def api_key(self, api_key):
+        """Set the apiKey for the client instance"""
+        self._api_key = api_key
+
+    @property
+    def inst_token(self):
+        """Get the instToken for the client instance"""
+        return self._inst_token
+    @inst_token.setter
+    def inst_token(self, inst_token):
+        """Set the instToken for the client instance"""
+        self._inst_token = inst_token
+
+    def exec_request(self, doi):
+        # throttle if needed
+        interval = time.time() - self._Article__last_request_timestamp
+        if interval < self._Article__min_req_interval:
+            time.sleep(self._Article__min_req_interval - interval)
+
+        # contruct request params
+        self.URL = f"{self.__url_base}{doi}"
+        headers = {
+            "X-ELS-APIKey"  : self.api_key,
+            "User-Agent"    : self.__user_agent,
+            "Accept"        : 'application/pdf'
+        }
+        if self.inst_token:
+            headers["X-ELS-Insttoken"] = self.inst_token
+
+        # send request
+        res = requests.get(
+            self.URL,
+            headers = headers
+        )
+        
+        # TODO: add support for downloading files in future
+        # filepath = os.path.join(self.local_dir, f"{scopus_id}.pdf")
+
+        # process response
+        if res.status_code == 200:
+            return self._write_to_temp_file(res)
+        
+        return None
+
+class TFClient(Article):
+    def __init__(self):
+        # create temporary directory
+        self.dirpath = tempfile.mkdtemp()
+
+        op = webdriver.ChromeOptions()
+        # op.add_argument('headless')
+        op.add_experimental_option(
+            'prefs', 
+            {
+                "download.default_directory": self.dirpath, #Change default directory for downloads
+                "download.prompt_for_download": False, #To auto download the file
+                "download.directory_upgrade": True,
+                "plugins.always_open_pdf_externally": True #It will not show PDF directly in chrome
+            }
+        )
+        self.driver = webdriver.Chrome(ChromeDriverManager().install(), options=op)
+
+        # register filesystem observer
+        self.observer = Observer()
+        self.observer.schedule(self._handle_download, self.dirpath, recursive=False)
+        self.observer.start()
+
+    def cleanup(self):
+        # remove temporary directory
+        shutil.rmtree(self.dirpath)
+        self.driver.close()
+        self.driver.quit()
+        self.observer.stop()
+        self.observer.join()
+
+    def _handle_download(self):
+        f = open(self._get_filename())
+        text = self._pdf_to_text(f)
+
+    def _get_filename(self):
+        # fetches last created file in specified directory
+        filename = max([os.path.join(self.dirpath, f) for f in os.listdir(self.dirpath)], key=os.path.getctime)
+        return filename
+
+    def exec_request(self, doi):
+        self.doi = doi
+        url = f"https://www.tandfonline.com/doi/pdf/{doi}?download=true"
+        self.driver.get(url)
+
+class ArticleDownloader(Article):
+    def __init__(self, springerApiKey, sciencedirectApiKey):
+        self.springerApiKey = springerApiKey
+        self.sciencedirectApiKey = sciencedirectApiKey
+
+        self.springerClient = SpringerClient(springerApiKey)
+        self.sciencedirectClient = SDClient(sciencedirectApiKey)
+
+    def _mdpi_download(self, url):
+        print("mdpi downloading", url)
+        pdfUrl = url.strip("/") + "/pdf"
+        res = requests.get(pdfUrl)
+        return self._write_to_temp_file(res)
+
+    def downloadArticle(self, doi):
+        if doi == None:
+            return ''
+        print(f"downloading full text for {doi}")
+        text = ''
+
+        res = requests.get(f"https://www.doi.org/{doi}", allow_redirects=True)
+        if res.status_code == 200:
+            # check first for doi.org redirects to reduce worst case number of requests sent
+            subdomain, domain, suffix = extract(res.url)
+
+            print(res.url, domain)
+
+            try:
+                if domain == 'springer':
+                    text = self.springerClient.exec_request(doi)
+                elif domain == 'elsevier' or domain == 'sciencedirect':
+                    text = self.sciencedirectClient.exec_request(doi)
+                elif domain == 'tandfonline':
+                    pass
+                elif domain == 'mdpi':
+                    text = self._mdpi_download(res.url)
+            except:
+                pass
+        else:
+            # try each manually
+            text = self.springerClient.exec_request(doi)
+            if text == None:
+                text = self.sciencedirectClient.exec_request(doi)
+            if text == None:
+                text = ''
+
+        if text != '':
+            print(f"downloaded full text for {doi}")
+
+        return text
 
 class Elsevier(OWBaseWidget):
     name = "Elsevier"
@@ -28,7 +294,9 @@ class Elsevier(OWBaseWidget):
     want_main_area = False
     resizing_enabled = False
 
-    apiKey = settings.Setting("")
+    scopusApiKey = settings.Setting("")
+    springerApiKey = settings.Setting("")
+    sciencedirectApiKey = settings.Setting("")
     searchText = settings.Setting("")
     fieldType = settings.Setting(0)
     recordCount = settings.Setting(100)
@@ -60,7 +328,8 @@ class Elsevier(OWBaseWidget):
             ('author', 'dc:creator'),
             ('date', 'prism:coverDate'),
             ('abstract', 'abstract'),
-            ('DOI', 'prism:doi')
+            ('DOI', 'prism:doi'),
+            ('full text', 'full_text')
         ]
 
     def __init__(self):
@@ -68,7 +337,9 @@ class Elsevier(OWBaseWidget):
 
         # GUI
         self.apiKeyBox = gui.widgetBox(self.controlArea, "API key")
-        gui.lineEdit(self.apiKeyBox, self, 'apiKey', 'api key', valueType=str)
+        gui.lineEdit(self.apiKeyBox, self, 'scopusApiKey', 'scopus api key', valueType=str)
+        gui.lineEdit(self.apiKeyBox, self, 'springerApiKey', 'springer api key', valueType=str)
+        gui.lineEdit(self.apiKeyBox, self, 'sciencedirectApiKey', 'sciencedirect api key', valueType=str)
 
         gui.separator(self.controlArea)
 
@@ -105,8 +376,16 @@ class Elsevier(OWBaseWidget):
         """
 
         # check api key
-        if self.apiKey == "":
-            self.error('api key empty')
+        if self.scopusApiKey == "":
+            self.error('scopus api key empty')
+            self.progressBarFinished()
+
+        if self.springerApiKey == "":
+            self.error('springer api key empty')
+            self.progressBarFinished()
+
+        if self.sciencedirectApiKey == "":
+            self.error('sciencedirect api key empty')
             self.progressBarFinished()
 
         # capture input data
@@ -128,7 +407,7 @@ class Elsevier(OWBaseWidget):
 
         # execute scopus query
         try:
-            self.client = ElsClient(self.apiKey)
+            self.client = ElsClient(self.scopusApiKey)
         except:
             self.error('api key invalid')
             self.progressBarFinished()
@@ -146,6 +425,7 @@ class Elsevier(OWBaseWidget):
         # limit results shown
         if len(results) > recordCount:
             results = results[:recordCount]
+            print("showing", len(results), "results")
 
         # check for error
         if 'error' in results.columns:
@@ -182,12 +462,12 @@ class Elsevier(OWBaseWidget):
             self.info.set_output_summary(f"{totalCount} articles")
 
         final_df = results[['dc:title', 'dc:creator', 'prism:coverDate', 'prism:doi']]
-
-        final_df['prism:coverDate'] = final_df['prism:coverDate'].apply(lambda d: d.strftime('%d-%m-%Y'))
+        final_df['prism:coverDate'] = results['prism:coverDate'].apply(lambda d: d.strftime('%d-%m-%Y'))
 
         abstractDownloadCount = 0
         progress = METADATA_DOWNLOAD_PROGRESS
 
+        # function for downloading abstracts
         def get_abstract(link):
             nonlocal abstractDownloadCount, progress, self
             scopus_link = link['self']
@@ -208,7 +488,14 @@ class Elsevier(OWBaseWidget):
             self.progressBarSet(progress)
             return abstract
 
+        # download abstracts
         final_df['abstract'] = results['link'].apply(get_abstract)
+        del results
+
+        # download full text
+        articleDownloader = ArticleDownloader(self.springerApiKey, self.sciencedirectApiKey)
+        final_df['prism:doi'] = final_df['prism:doi'].replace({np.nan: None})
+        final_df['full_text'] = final_df['prism:doi'].apply(articleDownloader.downloadArticle)
 
         return final_df
 
