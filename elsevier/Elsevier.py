@@ -1,17 +1,8 @@
-import Orange.data
 from orangewidget.widget import OWBaseWidget, Output, settings
 from orangewidget import gui
 from orangecontrib.text.corpus import Corpus
 
-from elsapy.elsclient import ElsClient
-from elsapy.elssearch import ElsSearch
-
-import numpy as np
-import pandas as pd
-pd.options.mode.chained_assignment = None 
 import datetime
-
-METADATA_DOWNLOAD_PROGRESS = 30
 
 from tldextract import extract
 import requests
@@ -26,6 +17,14 @@ import tempfile
 import shutil
 import pytz
 import json
+import sys
+
+from decouple import config
+
+sys.path.append(os.path.dirname(__file__))
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+
+from worker import Worker
 
 """
 tandfonline does not issue api keys; rather uses cloudflare services as a means of protection from bots.
@@ -36,6 +35,8 @@ two ways to watch for automated chrome file downloads since webdriver does not f
     2. use filesystem observers like watchdog
 """
 from watchdog.observers import Observer
+
+from PyQt5.QtCore import QThread
 
 DOI_WAIT_TIME = 5
 DOI_MAX_COUNT = 10
@@ -508,16 +509,16 @@ class Elsevier(OWBaseWidget):
         articles = Output("Articles", Corpus)
 
     want_main_area = False
-    resizing_enabled = False
+    resizing_enabled = True
 
-    scopusApiKey = settings.Setting("")
-    springerApiKey = settings.Setting("")
-    sciencedirectApiKey = settings.Setting("")
+    scopusApiKey = settings.Setting(config('SCOPUS_API_KEY'))
+    springerApiKey = settings.Setting(config('SPRINGER_API_KEY'))
+    sciencedirectApiKey = settings.Setting(config('SCIENCEDIRECT_API_KEY'))
     searchText = settings.Setting("")
     fieldType = settings.Setting(0)
     recordCount = settings.Setting(100)
-    startDate = settings.Setting('1991-08-15')
-    endDate = settings.Setting('2000-02-24')
+    startDate = settings.Setting('2020-01-01')
+    endDate = settings.Setting('2022-01-01')
 
     fieldTypeItems = (
         'Abstract Title, Abstract, Keyword',
@@ -528,25 +529,6 @@ class Elsevier(OWBaseWidget):
         'ISSN',
         'All fields'
     )
-
-    fieldTypeCodes = {
-        'Abstract Title, Abstract, Keyword': 'TITLE-ABS-KEY',
-        'Abstract': 'ABS',
-        'Keyword': 'KEY',
-        'Article Title': 'TITLE',
-        'DOI': 'DOI',
-        'ISSN': 'ISSN',
-        'All fields': 'ALL'
-    }
-
-    metadataCodes = [
-            ('title', 'dc:title'),
-            ('author', 'dc:creator'),
-            ('date', 'prism:coverDate'),
-            ('abstract', 'abstract'),
-            ('DOI', 'prism:doi'),
-            ('full text', 'full_text')
-        ]
 
 
     def __init__(self):
@@ -586,206 +568,78 @@ class Elsevier(OWBaseWidget):
 
         self.info.set_input_summary(self.info.NoInput)
 
-    def _fetch_results(self):
-        """
-            - captures input data
-            - generates and executes scopus query
-        """
+        self.isDownloading = False
 
-        # check api key
-        if self.scopusApiKey == "":
-            self.error('scopus api key empty')
-            self.progressBarFinished()
 
-        if self.springerApiKey == "":
-            self.error('springer api key empty')
-            self.progressBarFinished()
-
-        if self.sciencedirectApiKey == "":
-            self.error('sciencedirect api key empty')
-            self.progressBarFinished()
-
-        # capture input data
-        fieldType = self.fieldTypeItems[self.fieldType]
-        searchText = self.searchText
-        recordCount = self.recordCount
-
-        startDate = self.startCalendar.textFromDateTime(self.startCalendar.dateTime())
-        endDate = self.endCalendar.textFromDateTime(self.endCalendar.dateTime())
-
-        self.startDate = startDate
-        self.endDate = endDate
-
-        startYear = startDate[:4]
-        endYear = endDate[:4]
-
-        # generate scopus query
-        query = f'{self.fieldTypeCodes[fieldType]}({searchText}) AND PUBYEAR > {startYear} AND PUBYEAR < {endYear}'
-
-        # execute scopus query
-        try:
-            self.client = ElsClient(self.scopusApiKey)
-        except:
-            self.error('api key invalid')
-            self.progressBarFinished()
-
-        self.doc_srch = ElsSearch(query,'scopus')
-        
-        try:
-            self.doc_srch.execute(self.client, get_all = True)
-        except:
-            self.error('could not execute scopus query. check internet.')
-            self.progressBarFinished()
-
-        results = self.doc_srch.results_df
-
-        # limit results shown
-        if len(results) > recordCount:
-            results = results[:recordCount]
-            print("showing", len(results), "results")
-
-        # check for error
-        if 'error' in results.columns:
-            self.info.set_output_summary(f"no articles found")
-            self.error('error fetching results')
-            self.progressBarFinished()
-            return pd.DataFrame()
-
-        # update progressbar
-        self.progressBarSet(METADATA_DOWNLOAD_PROGRESS)
-
-        return results
-
-    def _extract_data(self):
-        """
-            downloads abstract and full text (if available) for each article and
-            returns dataframe with columns
-            1. title
-            2. author(/s)
-            3. date of publication
-            4. DOI
-            5. abstract
-        """
-
-        results = self._fetch_results()
-        totalCount = len(results)
-
-        if totalCount == 0:
-            self.info.set_output_summary(f"no articles found")
-            self.warning('no records found')
-            self.progressBarFinished()
-            return pd.DataFrame()
-        else:
-            self.info.set_output_summary(f"{totalCount} articles")
-
-        final_df = results[['dc:title', 'dc:creator', 'prism:coverDate', 'prism:doi']]
-        final_df['prism:coverDate'] = results['prism:coverDate'].apply(lambda d: d.strftime('%d-%m-%Y'))
-
-        abstractDownloadCount = 0
-        progress = METADATA_DOWNLOAD_PROGRESS
-
-        # function for downloading abstracts
-        def get_abstract(link):
-            nonlocal abstractDownloadCount, progress, self
-            scopus_link = link['self']
-
-            try:
-                rawdata = self.client.exec_request(scopus_link)
-            except:
-                self.error('could not fetch abstract. check internet.')
-            
-            try:
-                response = rawdata['abstracts-retrieval-response']
-                abstract = response['coredata']['dc:description']
-            except:
-                abstract = 'n/a'
-
-            abstractDownloadCount += 1
-            progress  = int(METADATA_DOWNLOAD_PROGRESS + (100 - METADATA_DOWNLOAD_PROGRESS) * abstractDownloadCount / totalCount)
-            self.progressBarSet(progress)
-            return abstract
-
-        # download abstracts
-        final_df['abstract'] = results['link'].apply(get_abstract)
-        del results
-
-        # download full text
-        articleDownloader = ArticleDownloader(self.springerApiKey, self.sciencedirectApiKey)
-        final_df['prism:doi'] = final_df['prism:doi'].replace({np.nan: None})
-        final_df['full_text'] = final_df['prism:doi'].apply(articleDownloader.downloadArticle)
-
-        print(articleDownloader.articleDomainCount)
-        print("downloaded full text for", articleDownloader.downloadCount, "articles")
-
-        return final_df
-
-    def _dataframe_to_corpus_entries(self, df):
-        """
-            create corpus entries from dataframe records
-
-            Args:
-                - df : dataframe containing columns :- title, author, date of publication, DOI, abstract
-
-            Returns:
-                - metadata: an n*m array where n is the number of articles and m is the number of 
-                            attributes (title, author...) for each article
-                - class_values: list where elements are class values for each article (empty in our case)
-        """
-        class_values = []
-        metadata = np.empty((len(df), len(df.columns)), dtype=object)
-
-        for index, row in df.iterrows():
-            fields = []
-
-            for _, field_key in self.metadataCodes:
-                fields.append(row[field_key])
-
-            metadata[index] = np.array(fields, dtype=object)[None, :]
-
-        return metadata, class_values
-
-    def _corpus_from_records(self, meta_values, class_values):
-        """
-            converts records to a corpus
-
-            Args:
-                - metadata: an n*m array where n is the number of articles and m is the number of 
-                            attributes (title, author...) for each article
-                - class_values: list where elements are class values for each article (empty in our case)
-
-            Returns:
-                - corpus: the output corpus suitable for a corpus viewer
-        """
-
-        meta_vars = []
-
-        for field_name, _ in self.metadataCodes:
-            meta_vars.append(Orange.data.StringVariable.make(field_name))
-            if field_name == 'title':
-                meta_vars[-1].attributes['title'] = True
-                
-
-        domain = Orange.data.Domain([], metas = meta_vars)
-
-        return Corpus(domain=domain, metas=meta_values)
-
-    def _send_article(self):
+    def _start_download(self):
         """
             the handler for the search button
 
             - extracts data from scopus query result
             - converts extracted data to metadata and class values
             - generates corpus from said metadata and class values
-            - signals the corpus to the output stream
+            - signals the corpus to the output strea
         """
+        if not self.isDownloading:
+            self.isDownloading = True
 
-        self.progress = Orange.widgets.gui.ProgressBar(self, 1)
-        self.progressBarInit()
-        df = self._extract_data()
-        meta_values, class_values = self._dataframe_to_corpus_entries(df)
-        corpus = self._corpus_from_records(meta_values, class_values)
+            # capture input data
+            fieldType = self.fieldTypeItems[self.fieldType]
+            searchText = self.searchText
+            recordCount = self.recordCount
+
+            startDate = self.startCalendar.textFromDateTime(self.startCalendar.dateTime())
+            endDate = self.endCalendar.textFromDateTime(self.endCalendar.dateTime())
+
+            self.startDate = startDate
+            self.endDate = endDate
+
+            startYear = startDate[:4]
+            endYear = endDate[:4]
+
+            self.progress = gui.ProgressBar(self, 1)
+            self.progressBarInit()
+            
+            # create thread handler
+            self.thread = QThread()
+
+            # create worker
+            self.worker = Worker(self.scopusApiKey, self.springerApiKey, self.sciencedirectApiKey, fieldType, searchText, recordCount, startDate, endDate)
+            self.worker.moveToThread(self.thread)
+
+            self.worker.message.connect(self._message_from_worker)
+            self.worker.error.connect(self._error_from_worker)
+            self.worker.progress.connect(self._progress_from_worker)
+
+            self.thread.started.connect(self.worker.run)
+            self.worker.finished.connect(self.thread.quit)
+            self.worker.finished.connect(self.worker.deleteLater)
+            self.thread.finished.connect(self.thread.deleteLater)
+
+            # start thread
+            self.thread.start()
+
+            def worker_finished(corpus):
+                if type(corpus) == Corpus and len(corpus) > 0:
+                    self.corpus = corpus
+                    self.progressBarFinished()
+                    self.Outputs.articles.send(corpus)
+                    self.isDownloading = False
+                
+            self.worker.finished.connect(worker_finished)
+        
+
+    def _message_from_worker(self, message):
+        print(message)
+        self.info.set_output_summary(message)
+
+    def _error_from_worker(self, error):
+        print(error)
+        self.error(error)
         self.progressBarFinished()
-        self.Outputs.articles.send(corpus)
+        print('quitting worker thread')
+        self.thread.quit()
+        self.isDownloading = False
 
-    def _start_download(self):
-        self._send_article()
+    def _progress_from_worker(self, progress):
+        self.progressBarSet(progress)
