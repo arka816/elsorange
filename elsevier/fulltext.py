@@ -10,6 +10,7 @@ import pytz
 import json
 from tldextract import extract
 import requests
+from threading import Queue, Thread
 
 """
 tandfonline does not issue api keys; rather uses cloudflare services as a means of protection from bots.
@@ -27,6 +28,8 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 DOI_WAIT_TIME = 5
 DOI_MAX_COUNT = 10
+
+MAX_THREADS = 4
 
 class Article:
     """base class for article downloaders""" 
@@ -347,13 +350,11 @@ class ArticleDownloader(Article):
 
     STOP_HTTP_CODES = [403, 401, 404, 503]
 
-    def __init__(self, springerApiKey, sciencedirectApiKey, keyword):
+    def __init__(self, springerApiKey, sciencedirectApiKey, keyword, downloadCap):
         self.springerApiKey = springerApiKey
         self.sciencedirectApiKey = sciencedirectApiKey
         self.keyword = keyword
-
-        self.springerClient = SpringerClient(springerApiKey)
-        self.sciencedirectClient = SDClient(sciencedirectApiKey)
+        self.downloadCap = downloadCap
 
         # cache folder for full text
         local_folder = os.getenv('LOCALAPPDATA')
@@ -367,10 +368,16 @@ class ArticleDownloader(Article):
 
         self.jsonFilePath = os.path.join(self.cache_folder, self.CACHE_PATH_FILENAME)
         if os.path.isfile(self.jsonFilePath):
-            with open(self.jsonFilePath, 'r') as f:
-                self.cacheFilepaths = json.load(f)
+            try:
+                with open(self.jsonFilePath, 'r') as f:
+                    self.cacheFilepaths = json.load(f)
+            except Exception as ex:
+                print("error loading filepath caches.")
 
     def __del__(self):
+        self.__cleanup__()
+
+    def __cleanup__(self):
         with open(self.jsonFilePath, 'w') as f:
             json.dump(self.cacheFilepaths, f, indent=4)
 
@@ -409,11 +416,18 @@ class ArticleDownloader(Article):
 
         return None, None
 
-    def _cache_full_text(self, doi, text):
-        if doi in self.cacheFilepaths:
-            return
+    def __json_length__(self, dict):
+        return sum([len(dict[keyword]) for keyword in dict])
 
-        filename = f"{len(self.cacheFilepaths) + 1}.txt"
+    def _cache_full_text(self, doi, text):
+        if self.keyword in self.cacheFilepaths:
+            if doi in self.cacheFilepaths[self.keyword]:
+                return
+        else:
+            # mutex issue
+            self.cacheFilepaths[self.keyword] = dict()
+
+        filename = f"{self.__json_length__(self.cacheFilepaths) + 1}.txt"
         filepath = os.path.join(self.cache_folder, filename)
 
         try:
@@ -421,10 +435,73 @@ class ArticleDownloader(Article):
                 f.write(text)
         except Exception as ex:
             print(f"could not write text to file {filepath}. {ex}")
-        else:            
+        else:      
+            # mutex issue      
             self.cacheFilepaths[doi] = filepath
 
-    def downloadArticle(self, doi):
+    def getPublisher(self, doi):
+        if doi is None or doi == '':
+            return None
+
+        # doi request
+        domain, url = self._get_domain(doi)
+
+        if domain != None:
+            if domain in self.articleDomainCount:
+                self.articleDomainCount[domain] += 1
+            else:
+                self.articleDomainCount[domain] = 1
+
+            if domain not in self.articleDownloadCount:
+                self.articleDownloadCount[domain] = 0
+
+        return [domain, url]
+        
+    def downloadArticles(self, data):
+        fullTextQueue = Queue()
+        fullTextDict = dict()
+
+        for _, row in data.iterrows():
+            fullTextQueue.put((row['prism:doi'], row['domain'], row['url']))
+
+        workers = [
+            Thread(target=self.downloadArticleEventLoop, args=(fullTextQueue, fullTextDict)) 
+            for _ in range(MAX_THREADS)
+        ]
+
+        for _ in workers:
+            fullTextQueue.put((None, None, None))
+
+        for worker in workers:
+            worker.start()
+
+        for worker in workers:
+            worker.join()
+
+        return fullTextDict
+
+    def downloadArticleEventLoop(self, fullTextQueue, fullTextDict):
+        while True:
+            doi, domain, url = fullTextQueue.get()
+
+            if doi is None or domain is None or url is None:
+                break
+
+            fullText = self.downloadArticle(doi, domain, url)
+            fullTextDict[doi] = fullText
+
+    def downloadArticle(self, doi, domain, url):
+        '''
+            runs on a single thread
+            global values updated:
+                - self.articleDownloadCount
+                - self.downloadCount
+                - self.cacheFilepaths
+                - self.logger (in future updates)
+        '''
+        if self.downloadCount > self.downloadCap:
+            return None
+
         if doi is None or doi == '':
             return None
 
@@ -446,20 +523,18 @@ class ArticleDownloader(Article):
                     else:
                         print(f"fetched {doi} from cache")
                         return text
-        
+                else:
+                    print(f"{filepath} is not a file")
+            else:
+                print(f"{doi} not in cache for {self.keyword}")
+        else:
+            print(f"search prompt {self.keyword} not in cache")
+            
 
-        # doi request
-        domain, url = self._get_domain(doi)
+        self.springerClient = SpringerClient(self.springerApiKey)
+        self.sciencedirectClient = SDClient(self.sciencedirectApiKey)
 
         if domain != None:
-            if domain in self.articleDomainCount:
-                self.articleDomainCount[domain] += 1
-            else:
-                self.articleDomainCount[domain] = 1
-
-            if domain not in self.articleDownloadCount:
-                self.articleDownloadCount[domain] = 0
-
             try:
                 if domain == 'springer':
                     text = self.springerClient.exec_request(doi)
@@ -471,6 +546,7 @@ class ArticleDownloader(Article):
                     text = self._mdpi_download(url)
 
                 if text != '' and text != None:
+                    # mutex issue
                     self.articleDownloadCount[domain] += 1
                     self.downloadCount += 1
             except:

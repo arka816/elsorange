@@ -10,7 +10,11 @@ import numpy as np
 from elsapy.elsclient import ElsClient
 from elsapy.elssearch import ElsSearch
 
+from fulltext import ArticleDownloader
+
 METADATA_DOWNLOAD_PROGRESS = 20
+
+MAX_FULLTEXT_PER_KEYWORD = 50
 
 class Worker(QObject):
     finished = pyqtSignal(Corpus)
@@ -24,7 +28,7 @@ class Worker(QObject):
         ('date', 'prism:coverDate'),
         ('abstract', 'abstract'),
         ('DOI', 'prism:doi'),
-        # ('full text', 'full_text')
+        ('full text', 'full_text')
     ]
 
     fieldTypeCodes = {
@@ -163,12 +167,21 @@ class Worker(QObject):
 
         # download full text
         # TODO: fix full text downloader
-        # articleDownloader = ArticleDownloader(self.springerApiKey, self.sciencedirectApiKey)
-        # final_df['prism:doi'] = final_df['prism:doi'].replace({np.nan: None})
-        # final_df['full_text'] = final_df['prism:doi'].apply(articleDownloader.downloadArticle)
+        final_df['prism:doi'] = final_df['prism:doi'].replace({np.nan: None})
+        available_doi = final_df[final_df['prism:doi'] != None].shape[0]
 
-        # print(articleDownloader.articleDomainCount)
-        # print("downloaded full text for", articleDownloader.downloadCount, "articles")
+        # drop duplicate dois
+        final_df.drop_duplicates(subset=['prism:doi'], inplace=True)
+
+        articleDownloader = ArticleDownloader(self.springerApiKey, self.sciencedirectApiKey, self.searchText, min(available_doi, MAX_FULLTEXT_PER_KEYWORD))
+        # get publisher information
+        final_df[['domain', 'url']] = final_df['prism:doi'].apply(lambda doi: pd.Series(articleDownloader.getPublisher))
+
+        fullTextDict = ArticleDownloader.downloadArticles(final_df[['prism:doi', 'domain', 'url']])
+        final_df['full_text'] = final_df['prism:doi'].apply(lambda doi: fullTextDict[doi] if doi in fullTextDict else '')
+
+        print(articleDownloader.articleDomainCount)
+        print("downloaded full text for", articleDownloader.downloadCount, "articles")
 
         return final_df
 
