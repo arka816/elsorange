@@ -12,7 +12,7 @@ from decouple import config
 import logging
 
 logging.basicConfig(
-    filename=os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs", ".log"),
+    filename=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".log"),
     format='%(asctime)s - %(levelname)s - %(message)s',
     filemode='a',
     level=logging.INFO

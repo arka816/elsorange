@@ -192,6 +192,8 @@ class Worker(QObject):
         self.logging.info(f"scraper working for {articleDownloader.articleDomainCount} domains")
         self.logging.info(f"downloaded full text for {articleDownloader.downloadCount} articles")
 
+        final_df.drop(columns=['domain', 'url'], inplace=True)
+
         return final_df
 
     def _dataframe_to_corpus_entries(self, df):
