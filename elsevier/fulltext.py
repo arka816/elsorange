@@ -442,7 +442,7 @@ class ArticleDownloader(Article):
             logging.error(f"could not write text to file {filepath}. {ex}")
         else:      
             # mutex issue      
-            self.cacheFilepaths[doi] = filepath
+            self.cacheFilepaths[self.keyword][doi] = filepath
 
     def getPublisher(self, doi):
         if doi is None or doi == '':
