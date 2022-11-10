@@ -10,7 +10,9 @@ import pytz
 import json
 from tldextract import extract
 import requests
-from threading import Queue, Thread
+from threading import Thread
+import queue
+
 
 """
 tandfonline does not issue api keys; rather uses cloudflare services as a means of protection from bots.
@@ -30,6 +32,8 @@ DOI_WAIT_TIME = 5
 DOI_MAX_COUNT = 10
 
 MAX_THREADS = 4
+
+logging = None
 
 class Article:
     """base class for article downloaders""" 
@@ -266,7 +270,7 @@ class SPClient(Article):
 
     def exec_request(self, doi):
         if not self.__allowed:
-            print("sagepub API cannot be used on weekends")
+            logging.warning("sagepub API cannot be used on weekends")
             return
 
         if 0 <= self.la_local_time.hour < 12:
@@ -350,11 +354,14 @@ class ArticleDownloader(Article):
 
     STOP_HTTP_CODES = [403, 401, 404, 503]
 
-    def __init__(self, springerApiKey, sciencedirectApiKey, keyword, downloadCap):
+    def __init__(self, springerApiKey, sciencedirectApiKey, keyword, downloadCap, logger):
         self.springerApiKey = springerApiKey
         self.sciencedirectApiKey = sciencedirectApiKey
         self.keyword = keyword
         self.downloadCap = downloadCap
+
+        global logging
+        logging = logger
 
         # cache folder for full text
         local_folder = os.getenv('LOCALAPPDATA')
@@ -364,7 +371,7 @@ class ArticleDownloader(Article):
             try:
                 os.mkdir(self.cache_folder)
             except:
-                print("error creating cache folder")
+                logging.error("error creating cache folder")
 
         self.jsonFilePath = os.path.join(self.cache_folder, self.CACHE_PATH_FILENAME)
         if os.path.isfile(self.jsonFilePath):
@@ -372,7 +379,7 @@ class ArticleDownloader(Article):
                 with open(self.jsonFilePath, 'r') as f:
                     self.cacheFilepaths = json.load(f)
             except Exception as ex:
-                print("error loading filepath caches.")
+                logging.error("error loading filepath caches.")
 
     def __del__(self):
         self.__cleanup__()
@@ -383,7 +390,7 @@ class ArticleDownloader(Article):
 
     def _mdpi_download(self, url):
         pdfUrl = url.strip("/") + "/pdf"
-        print("mdpi downloading", pdfUrl)
+        logging.info(f"mdpi downloading {pdfUrl}")
         
         res = requests.get(pdfUrl)
         if res.status_code == 200:
@@ -396,17 +403,15 @@ class ArticleDownloader(Article):
         count = 0
         while count < DOI_MAX_COUNT:
             if count > 1:
-                print('retrying doi.org request for', doi)
+                logging.info(f"retrying doi.org request for {doi}")
             count += 1
             res = requests.get(f"https://www.doi.org/{doi}", allow_redirects=True)
             if res.status_code == 200:
-                print(res.url)
                 _, domain, _ = extract(res.url)
                 res.close()
                 return domain, res.url
             else:
                 _, domain, _ = extract(res.url)
-                print(res.status_code, res.reason, res.url, domain)
                 if res.status_code in self.STOP_HTTP_CODES:
                     # authorization issues
                     res.close()
@@ -434,14 +439,14 @@ class ArticleDownloader(Article):
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(text)
         except Exception as ex:
-            print(f"could not write text to file {filepath}. {ex}")
+            logging.error(f"could not write text to file {filepath}. {ex}")
         else:      
             # mutex issue      
             self.cacheFilepaths[doi] = filepath
 
     def getPublisher(self, doi):
         if doi is None or doi == '':
-            return None
+            return [None, None]
 
         # doi request
         domain, url = self._get_domain(doi)
@@ -458,7 +463,7 @@ class ArticleDownloader(Article):
         return [domain, url]
         
     def downloadArticles(self, data):
-        fullTextQueue = Queue()
+        fullTextQueue = queue.Queue()
         fullTextDict = dict()
 
         for _, row in data.iterrows():
@@ -505,7 +510,7 @@ class ArticleDownloader(Article):
         if doi is None or doi == '':
             return None
 
-        print(f"downloading full text for {doi}")
+        logging.info(f"downloading full text for {doi}")
         text = ''
 
         # check if doi already exists in cache
@@ -519,16 +524,16 @@ class ArticleDownloader(Article):
                         with open(filepath) as f:
                             text = f.read()
                     except:
-                        print(f"doi: {doi} full-text not found in cache")
+                        logging.warning(f"doi: {doi} full-text not found in cache")
                     else:
-                        print(f"fetched {doi} from cache")
+                        logging.info(f"fetched {doi} from cache")
                         return text
                 else:
-                    print(f"{filepath} is not a file")
+                    logging.warning(f"{filepath} is not a file")
             else:
-                print(f"{doi} not in cache for {self.keyword}")
+                logging.warning(f"{doi} not in cache for {self.keyword}")
         else:
-            print(f"search prompt {self.keyword} not in cache")
+            logging.warning(f"search prompt {self.keyword} not in cache")
             
 
         self.springerClient = SpringerClient(self.springerApiKey)
@@ -555,10 +560,10 @@ class ArticleDownloader(Article):
             pass
 
         if text != '':
-            print(f"downloaded full text for {doi}")
+            logging.info(f"downloaded full text for {doi}")
             # cache
             self._cache_full_text(doi, text)
         else:
-            print(f"could not download full text for {doi}")
+            logging.warning(f"could not download full text for {doi}")
 
         return text

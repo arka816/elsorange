@@ -9,6 +9,15 @@ import sys
 
 from decouple import config
 
+import logging
+
+logging.basicConfig(
+    filename=os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs", ".log"),
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    filemode='a',
+    level=logging.INFO
+)
+
 sys.path.append(os.path.dirname(__file__))
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
@@ -123,7 +132,7 @@ class Elsevier(OWBaseWidget):
             self.thread = QThread()
 
             # create worker
-            self.worker = Worker(self.scopusApiKey, self.springerApiKey, self.sciencedirectApiKey, fieldType, searchText, recordCount, startDate, endDate)
+            self.worker = Worker(self.scopusApiKey, self.springerApiKey, self.sciencedirectApiKey, fieldType, searchText, recordCount, startDate, endDate, logging)
             self.worker.moveToThread(self.thread)
 
             self.worker.message.connect(self._message_from_worker)
@@ -149,14 +158,16 @@ class Elsevier(OWBaseWidget):
         
 
     def _message_from_worker(self, message):
-        print(message)
+        logging.info(message)
         self.info.set_output_summary(message)
 
     def _error_from_worker(self, error):
-        print(error)
+        logging.error(error)
         self.error(error)
+
         self.progressBarFinished()
-        print('quitting worker thread')
+        logging.info('quitting worker thread')
+
         self.thread.quit()
         self.isDownloading = False
 

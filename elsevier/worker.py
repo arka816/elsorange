@@ -10,6 +10,11 @@ import numpy as np
 from elsapy.elsclient import ElsClient
 from elsapy.elssearch import ElsSearch
 
+import os
+import sys
+
+sys.path.append(os.path.dirname(__file__))
+
 from fulltext import ArticleDownloader
 
 METADATA_DOWNLOAD_PROGRESS = 20
@@ -41,7 +46,7 @@ class Worker(QObject):
         'All fields': 'ALL'
     }
 
-    def __init__(self, scopusApiKey, springerApiKey, sciencedirectApiKey, fieldType, searchText, recordCount, startDate, endDate):
+    def __init__(self, scopusApiKey, springerApiKey, sciencedirectApiKey, fieldType, searchText, recordCount, startDate, endDate, logging):
         QObject.__init__(self)
 
         self.scopusApiKey = scopusApiKey
@@ -55,8 +60,10 @@ class Worker(QObject):
         self.startYear = startDate[:4]
         self.endYear = endDate[:4]
 
+        self.logging = logging
+
     def __del__(self):
-        print('worker object deleted')
+        self.logging.info('worker object deleted')
 
     def _fetch_results(self):
         """
@@ -101,7 +108,7 @@ class Worker(QObject):
         # limit results shown
         if len(results) > self.recordCount:
             results = results[:self.recordCount]
-            print("showing", len(results), "results")
+            self.logging.info(f"showing {len(results)} results")
 
         # check for error
         if 'error' in results.columns:
@@ -173,15 +180,17 @@ class Worker(QObject):
         # drop duplicate dois
         final_df.drop_duplicates(subset=['prism:doi'], inplace=True)
 
-        articleDownloader = ArticleDownloader(self.springerApiKey, self.sciencedirectApiKey, self.searchText, min(available_doi, MAX_FULLTEXT_PER_KEYWORD))
+        articleDownloader = ArticleDownloader(self.springerApiKey, self.sciencedirectApiKey, self.searchText, min(available_doi, MAX_FULLTEXT_PER_KEYWORD), self.logging)
         # get publisher information
-        final_df[['domain', 'url']] = final_df['prism:doi'].apply(lambda doi: pd.Series(articleDownloader.getPublisher))
+        final_df[['domain', 'url']] = final_df['prism:doi'].apply(lambda doi: pd.Series(articleDownloader.getPublisher(doi)))
 
-        fullTextDict = ArticleDownloader.downloadArticles(final_df[['prism:doi', 'domain', 'url']])
+        print(final_df)
+
+        fullTextDict = articleDownloader.downloadArticles(final_df[['prism:doi', 'domain', 'url']])
         final_df['full_text'] = final_df['prism:doi'].apply(lambda doi: fullTextDict[doi] if doi in fullTextDict else '')
 
-        print(articleDownloader.articleDomainCount)
-        print("downloaded full text for", articleDownloader.downloadCount, "articles")
+        self.logging.info(f"scraper working for {articleDownloader.articleDomainCount} domains")
+        self.logging.info(f"downloaded full text for {articleDownloader.downloadCount} articles")
 
         return final_df
 
