@@ -9,7 +9,6 @@ import shutil
 import pytz
 import json
 from tldextract import extract
-import requests
 from threading import Thread
 import queue
 
@@ -463,19 +462,23 @@ class ArticleDownloader(Article):
         return [domain, url]
         
     def downloadArticles(self, data):
-        fullTextQueue = queue.Queue()
+        fullTextQueues = dict()
         fullTextDict = dict()
 
+        # one queue for each domain
         for _, row in data.iterrows():
-            fullTextQueue.put((row['prism:doi'], row['domain'], row['url']))
+            domain = row['domain']
+            if domain not in fullTextQueues:
+                fullTextQueues[domain] = queue.Queue()
+            fullTextQueues[domain].put((row['prism:doi'], row['url']))
 
         workers = [
-            Thread(target=self.downloadArticleEventLoop, args=(fullTextQueue, fullTextDict)) 
-            for _ in range(MAX_THREADS)
+            Thread(target=self.downloadArticleEventLoop, args=(fullTextQueues, fullTextDict)) 
+            for domain in fullTextQueues.keys()
         ]
 
-        for _ in workers:
-            fullTextQueue.put((None, None, None))
+        for domain in fullTextQueues.keys():
+            fullTextQueues[domain].put((None, None))
 
         for worker in workers:
             worker.start()
@@ -485,9 +488,9 @@ class ArticleDownloader(Article):
 
         return fullTextDict
 
-    def downloadArticleEventLoop(self, fullTextQueue, fullTextDict):
+    def downloadArticleEventLoop(self, fullTextQueues, fullTextDict, domain):
         while True:
-            doi, domain, url = fullTextQueue.get()
+            doi, url = fullTextQueues[domain].get()
 
             if doi is None or domain is None or url is None:
                 break
