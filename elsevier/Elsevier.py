@@ -11,15 +11,30 @@ from decouple import config
 
 import logging
 
-logging.basicConfig(
-    filename=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".log"),
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    filemode='a',
-    level=logging.INFO
-)
+LOCAL_FOLDER = os.getenv('LOCALAPPDATA')
+CACHE_FOLDER = os.path.join(LOCAL_FOLDER, "elsevier")
+
+if not os.path.exists(CACHE_FOLDER):
+    try:
+        os.mkdir(CACHE_FOLDER)
+    except:
+        pass
 
 sys.path.append(os.path.dirname(__file__))
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+sys.path.append(os.path.join(CACHE_FOLDER, ".log"))
+
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+
+
+logging.basicConfig(
+    filename=os.path.join(os.getenv('LOCALAPPDATA'), "elsevier", ".log"),
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    filemode='a',
+    level=logging.INFO,
+    force=True
+)
 
 from worker import Worker
 

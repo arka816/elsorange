@@ -11,6 +11,7 @@ import json
 from tldextract import extract
 from threading import Thread
 import queue
+from operator import itemgetter
 
 
 """
@@ -353,7 +354,9 @@ class ArticleDownloader(Article):
     jobFinishedCount = 0
 
     cacheFilepaths = dict()
+    domainFilepaths = dict()
     CACHE_PATH_FILENAME = "filepaths.json"
+    DOMAIN_PATH_FILENAME = "domains.json"
 
     STOP_HTTP_CODES = [403, 401, 404, 503]
 
@@ -381,20 +384,30 @@ class ArticleDownloader(Article):
             except:
                 logging.error("error creating cache folder")
 
-        self.jsonFilePath = os.path.join(self.cache_folder, self.CACHE_PATH_FILENAME)
-        if os.path.isfile(self.jsonFilePath):
+        self.cacheFilePathJsonFile = os.path.join(self.cache_folder, self.CACHE_PATH_FILENAME)
+        if os.path.isfile(self.cacheFilePathJsonFile):
             try:
-                with open(self.jsonFilePath, 'r') as f:
+                with open(self.cacheFilePathJsonFile, 'r') as f:
                     self.cacheFilepaths = json.load(f)
             except Exception as ex:
                 logging.error("error loading filepath caches.")
+
+        self.domainJsonFile = os.path.join(self.cache_folder, self.DOMAIN_PATH_FILENAME)
+        if os.path.isfile(self.domainJsonFile):
+            try:
+                with open(self.domainJsonFile, 'r') as f:
+                    self.domainFilepaths = json.load(f)
+            except Exception as ex:
+                logging.error("error loading domain caches.")
 
     def __del__(self):
         self.__cleanup__()
 
     def __cleanup__(self):
-        with open(self.jsonFilePath, 'w') as f:
+        with open(self.cacheFilePathJsonFile, 'w') as f:
             json.dump(self.cacheFilepaths, f, indent=4)
+        with open(self.domainJsonFile, 'w') as f:
+            json.dump(self.domainFilepaths, f, indent=4)
 
     def _mdpi_download(self, url):
         pdfUrl = url.strip("/") + "/pdf"
@@ -407,16 +420,31 @@ class ArticleDownloader(Article):
         return None
 
     def _get_domain(self, doi):
+        # check for cache
+        if doi in self.domainFilepaths:
+            return itemgetter('domain', 'url')(self.domainFilepaths[doi])
+
         # doi request
         count = 0
         while count < DOI_MAX_COUNT:
             if count > 1:
                 logging.info(f"retrying doi.org request for {doi}")
             count += 1
-            res = requests.get(f"https://www.doi.org/{doi}", allow_redirects=True)
+            try:
+                res = requests.get(f"https://www.doi.org/{doi}", allow_redirects=True)
+            except:
+                return None, None
             if res.status_code == 200:
                 _, domain, _ = extract(res.url)
                 res.close()
+
+                # cache results
+                if domain is not None and res.url is not None:
+                    self.domainFilepaths[doi] = {
+                        'domain': domain,
+                        'url': res.url
+                    }
+
                 return domain, res.url
             else:
                 _, domain, _ = extract(res.url)
@@ -484,7 +512,7 @@ class ArticleDownloader(Article):
             fullTextQueues[domain].put((row['prism:doi'], row['url']))
 
         workers = [
-            Thread(target=self.downloadArticleEventLoop, args=(fullTextQueues, fullTextDict)) 
+            Thread(target=self.downloadArticleEventLoop, args=(fullTextQueues, fullTextDict, domain)) 
             for domain in fullTextQueues.keys()
         ]
 
@@ -501,10 +529,15 @@ class ArticleDownloader(Article):
 
     def downloadArticleEventLoop(self, fullTextQueues, fullTextDict, domain):
         while True:
-            doi, url = fullTextQueues[domain].get()
+            queue = fullTextQueues[domain]
+
+            if queue.empty():
+                break
+
+            doi, url = queue.get()
 
             if doi is None or domain is None or url is None:
-                break
+                continue
 
             fullText = self.downloadArticle(doi, domain, url)
             fullTextDict[doi] = fullText
