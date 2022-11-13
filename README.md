@@ -5,21 +5,28 @@ Downloads elsevier article abstracts using scopus and renders them usable for vi
 Install using batch file provided post modification
 
 ```bat
-    powershell "start cmd -v runAs"
-
-    cd <Orange installation location>\Scripts
+    cd \Program Files\Orange\Scripts
     activate
 
-    @echo off
-    conda install -c jmgeiger elsapy
-    conda install orange3
-    conda install orange3-text
-    conda install numpy
-    conda install pandas
-    conda install setuptools
+    @REM @echo off
+    conda config --set channel_priority false
+    conda install -y -c jmgeiger elsapy
+    conda install -y orange3
+    conda install -y orange3-text
+    conda install -y numpy
+    conda install -y pandas
+    conda install -y setuptools
+    conda install -y selenium
+    conda install -c conda-forge -y  tldextract
+    conda install -c conda-forge -y python-decouple
+    conda install -c bjrn -y webdriver_manager
+    conda install -c conda-forge -y watchdog
+    conda install -c conda-forge -y pypdf2
 
-    @echo on
-    cd <widget installation location>
+    @REM @echo on
+    cd %~d0%
     pip install -e .
+    deactivate
+    echo "finished installing elsorange"
     pause
 ```
