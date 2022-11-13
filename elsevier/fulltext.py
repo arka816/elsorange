@@ -32,6 +32,9 @@ DOI_MAX_COUNT = 10
 
 MAX_THREADS = 4
 
+METADATA_DOWNLOAD_PROGRESS = 10
+FULLTEXT_DOWNLOAD_PROGRESS = 60
+
 logging = None
 
 class Article:
@@ -347,17 +350,23 @@ class ArticleDownloader(Article):
     articleDomainCount = dict()
     articleDownloadCount = dict()
     downloadCount = 0
+    jobFinishedCount = 0
 
     cacheFilepaths = dict()
     CACHE_PATH_FILENAME = "filepaths.json"
 
     STOP_HTTP_CODES = [403, 401, 404, 503]
 
-    def __init__(self, springerApiKey, sciencedirectApiKey, keyword, downloadCap, logger):
+    def __init__(self, springerApiKey, sciencedirectApiKey, keyword, downloadCap, logger, message, progress):
         self.springerApiKey = springerApiKey
         self.sciencedirectApiKey = sciencedirectApiKey
         self.keyword = keyword
         self.downloadCap = downloadCap
+        self.message = message
+        self.progress = progress
+
+        self.springerClient = SpringerClient(self.springerApiKey)
+        self.sciencedirectClient = SDClient(self.sciencedirectApiKey)
 
         global logging
         logging = logger
@@ -465,6 +474,8 @@ class ArticleDownloader(Article):
         fullTextQueues = dict()
         fullTextDict = dict()
 
+        self.totalJobCount = data.shape[0]
+
         # one queue for each domain
         for _, row in data.iterrows():
             domain = row['domain']
@@ -497,6 +508,11 @@ class ArticleDownloader(Article):
 
             fullText = self.downloadArticle(doi, domain, url)
             fullTextDict[doi] = fullText
+
+            self.jobFinishedCount += 1
+
+            self.message.emit(f"{self.downloadCount} full texts downloaded")
+            self.progress.emit(100 - FULLTEXT_DOWNLOAD_PROGRESS + FULLTEXT_DOWNLOAD_PROGRESS * self.jobFinishedCount / self.totalJobCount)
 
     def downloadArticle(self, doi, domain, url):
         '''
@@ -538,9 +554,6 @@ class ArticleDownloader(Article):
         else:
             logging.warning(f"search prompt {self.keyword} not in cache")
             
-
-        self.springerClient = SpringerClient(self.springerApiKey)
-        self.sciencedirectClient = SDClient(self.sciencedirectApiKey)
 
         if domain != None:
             try:

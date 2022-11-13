@@ -17,7 +17,8 @@ sys.path.append(os.path.dirname(__file__))
 
 from fulltext import ArticleDownloader
 
-METADATA_DOWNLOAD_PROGRESS = 20
+METADATA_DOWNLOAD_PROGRESS = 10
+FULLTEXT_DOWNLOAD_PROGRESS = 60
 
 MAX_FULLTEXT_PER_KEYWORD = 50
 
@@ -164,8 +165,11 @@ class Worker(QObject):
                 abstract = 'n/a'
 
             abstractDownloadCount += 1
-            progress  = int(METADATA_DOWNLOAD_PROGRESS + (100 - METADATA_DOWNLOAD_PROGRESS) * abstractDownloadCount / totalCount)
+            progress  = int(METADATA_DOWNLOAD_PROGRESS + (100 - METADATA_DOWNLOAD_PROGRESS - FULLTEXT_DOWNLOAD_PROGRESS) * abstractDownloadCount / totalCount)
+
             self.progress.emit(progress)
+            self.message.emit(f"{abstractDownloadCount}/{totalCount} abstracts")
+
             return abstract
 
         # download abstracts
@@ -176,11 +180,19 @@ class Worker(QObject):
         # TODO: fix full text downloader
         final_df['prism:doi'] = final_df['prism:doi'].replace({np.nan: None})
         available_doi = final_df[final_df['prism:doi'] != None].shape[0]
-
-        # drop duplicate dois
         final_df.drop_duplicates(subset=['prism:doi'], inplace=True)
 
-        articleDownloader = ArticleDownloader(self.springerApiKey, self.sciencedirectApiKey, self.searchText, min(available_doi, MAX_FULLTEXT_PER_KEYWORD), self.logging)
+        self.message.emit(f"{final_df[final_df['abstract'] != None].shape[0]} abstracts downloaded")
+
+        articleDownloader = ArticleDownloader(
+            self.springerApiKey, 
+            self.sciencedirectApiKey, 
+            self.searchText, 
+            min(available_doi, MAX_FULLTEXT_PER_KEYWORD), 
+            self.logging,
+            self.message,
+            self.progress
+        )
         # get publisher information
         final_df[['domain', 'url']] = final_df['prism:doi'].apply(lambda doi: pd.Series(articleDownloader.getPublisher(doi)))
 
@@ -189,7 +201,9 @@ class Worker(QObject):
         fullTextDict = articleDownloader.downloadArticles(final_df[['prism:doi', 'domain', 'url']])
         final_df['full_text'] = final_df['prism:doi'].apply(lambda doi: fullTextDict[doi] if doi in fullTextDict else '')
 
-        self.logging.info(f"scraper working for {articleDownloader.articleDomainCount} domains")
+        self.message.emit(f"{final_df[final_df['full_text'] != ''].shape[0]} full texts downloaded")
+
+        self.logging.info(f"scraper worked for {articleDownloader.articleDomainCount} domains")
         self.logging.info(f"downloaded full text for {articleDownloader.downloadCount} articles")
 
         final_df.drop(columns=['domain', 'url'], inplace=True)
