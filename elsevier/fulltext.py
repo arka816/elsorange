@@ -539,7 +539,10 @@ class ArticleDownloader(Article):
             if doi is None or domain is None or url is None:
                 continue
 
-            fullText = self.downloadArticle(doi, domain, url)
+            try:
+                fullText = self.downloadArticle(doi, domain, url)
+            except:
+                fullText = ''
             fullTextDict[doi] = fullText
 
             self.jobFinishedCount += 1
