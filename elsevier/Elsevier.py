@@ -31,7 +31,7 @@ for handler in logging.root.handlers[:]:
 logging.basicConfig(
     filename=os.path.join(os.getenv('LOCALAPPDATA'), "elsevier", ".log"),
     format='%(asctime)s - %(levelname)s - %(message)s',
-    filemode='a',
+    filemode='w',
     level=logging.INFO,
     force=True
 )
