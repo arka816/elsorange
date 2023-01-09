@@ -151,7 +151,7 @@ class Elsevier(OWBaseWidget):
             self.thread = QThread()
 
             # create worker
-            self.worker = Worker(self.scopusApiKey, self.springerApiKey, self.sciencedirectApiKey, fieldType, searchText, recordCount, startDate, endDate, logging, self.isDownloading)
+            self.worker = Worker(self.scopusApiKey, self.springerApiKey, self.sciencedirectApiKey, fieldType, searchText, recordCount, startDate, endDate, logging, self.downloadFullText)
             self.worker.moveToThread(self.thread)
 
             self.worker.message.connect(self._message_from_worker)
