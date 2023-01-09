@@ -62,6 +62,8 @@ class Elsevier(OWBaseWidget):
     recordCount = settings.Setting(100)
     startDate = settings.Setting('2020-01-01')
     endDate = settings.Setting('2022-01-01')
+    downloadFullText = settings.Setting(True)
+
 
     fieldTypeItems = (
         'Abstract Title, Abstract, Keyword',
@@ -106,6 +108,8 @@ class Elsevier(OWBaseWidget):
 
         gui.separator(self.controlArea)
 
+        self.downloadFullTextCheck = gui.checkBox(self.controlArea, self, 'downloadFullText', 'Download Full Text ')
+
         self.controlBox = gui.widgetBox(self.controlArea, orientation=1)
         gui.button(self.controlBox, self, 'SEARCH', callback=self._start_download)
 
@@ -147,7 +151,7 @@ class Elsevier(OWBaseWidget):
             self.thread = QThread()
 
             # create worker
-            self.worker = Worker(self.scopusApiKey, self.springerApiKey, self.sciencedirectApiKey, fieldType, searchText, recordCount, startDate, endDate, logging)
+            self.worker = Worker(self.scopusApiKey, self.springerApiKey, self.sciencedirectApiKey, fieldType, searchText, recordCount, startDate, endDate, logging, self.isDownloading)
             self.worker.moveToThread(self.thread)
 
             self.worker.message.connect(self._message_from_worker)

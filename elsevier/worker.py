@@ -33,8 +33,7 @@ class Worker(QObject):
         ('author', 'dc:creator'),
         ('date', 'prism:coverDate'),
         ('abstract', 'abstract'),
-        ('DOI', 'prism:doi'),
-        ('full text', 'full_text')
+        ('DOI', 'prism:doi')
     ]
 
     fieldTypeCodes = {
@@ -47,7 +46,9 @@ class Worker(QObject):
         'All fields': 'ALL'
     }
 
-    def __init__(self, scopusApiKey, springerApiKey, sciencedirectApiKey, fieldType, searchText, recordCount, startDate, endDate, logging):
+    def __init__(self, scopusApiKey, springerApiKey, sciencedirectApiKey, fieldType, searchText, recordCount, startDate, endDate, logging, downloadFullText):
+        global METADATA_DOWNLOAD_PROGRESS, FULLTEXT_DOWNLOAD_PROGRESS
+
         QObject.__init__(self)
 
         self.scopusApiKey = scopusApiKey
@@ -62,6 +63,14 @@ class Worker(QObject):
         self.endYear = endDate[:4]
 
         self.logging = logging
+
+        self.downloadFullText = downloadFullText
+
+        if self.downloadFullText:
+            self.metadataCodes.append(('full text', 'full_text'))
+        else:
+            METADATA_DOWNLOAD_PROGRESS = 70
+            FULLTEXT_DOWNLOAD_PROGRESS = 0
 
     def __del__(self):
         self.logging.info('worker object deleted')
@@ -178,35 +187,34 @@ class Worker(QObject):
 
         # download full text
         # TODO: fix full text downloader
-        final_df['prism:doi'] = final_df['prism:doi'].replace({np.nan: None})
-        available_doi = final_df[final_df['prism:doi'] != None].shape[0]
-        final_df.drop_duplicates(subset=['prism:doi'], inplace=True)
+        if self.downloadFullText:
+            final_df['prism:doi'] = final_df['prism:doi'].replace({np.nan: None})
+            available_doi = final_df[final_df['prism:doi'] != None].shape[0]
+            final_df.drop_duplicates(subset=['prism:doi'], inplace=True)
 
-        self.message.emit(f"{final_df[final_df['abstract'] != None].shape[0]} abstracts downloaded")
+            self.message.emit(f"{final_df[final_df['abstract'] != None].shape[0]} abstracts downloaded")
 
-        articleDownloader = ArticleDownloader(
-            self.springerApiKey, 
-            self.sciencedirectApiKey, 
-            self.searchText, 
-            min(available_doi, MAX_FULLTEXT_PER_KEYWORD), 
-            self.logging,
-            self.message,
-            self.progress
-        )
-        # get publisher information
-        final_df[['domain', 'url']] = final_df['prism:doi'].apply(lambda doi: pd.Series(articleDownloader.getPublisher(doi)))
+            articleDownloader = ArticleDownloader(
+                self.springerApiKey, 
+                self.sciencedirectApiKey, 
+                self.searchText, 
+                min(available_doi, MAX_FULLTEXT_PER_KEYWORD), 
+                self.logging,
+                self.message,
+                self.progress
+            )
+            # get publisher information
+            final_df[['domain', 'url']] = final_df['prism:doi'].apply(lambda doi: pd.Series(articleDownloader.getPublisher(doi)))
 
-        print(final_df)
+            fullTextDict = articleDownloader.downloadArticles(final_df[['prism:doi', 'domain', 'url']])
+            final_df['full_text'] = final_df['prism:doi'].apply(lambda doi: fullTextDict[doi] if doi in fullTextDict else '')
 
-        fullTextDict = articleDownloader.downloadArticles(final_df[['prism:doi', 'domain', 'url']])
-        final_df['full_text'] = final_df['prism:doi'].apply(lambda doi: fullTextDict[doi] if doi in fullTextDict else '')
+            self.message.emit(f"{final_df[final_df['full_text'] != ''].shape[0]} full texts downloaded")
 
-        self.message.emit(f"{final_df[final_df['full_text'] != ''].shape[0]} full texts downloaded")
+            self.logging.info(f"scraper worked for {articleDownloader.articleDomainCount} domains")
+            self.logging.info(f"downloaded full text for {articleDownloader.downloadCount} articles")
 
-        self.logging.info(f"scraper worked for {articleDownloader.articleDomainCount} domains")
-        self.logging.info(f"downloaded full text for {articleDownloader.downloadCount} articles")
-
-        final_df.drop(columns=['domain', 'url'], inplace=True)
+            final_df.drop(columns=['domain', 'url'], inplace=True)
 
         return final_df
 
